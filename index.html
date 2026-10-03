@@ -18,7 +18,8 @@
   .pick { background:var(--accent); color:#1a1208; border:0; border-radius:10px; padding:11px 16px;
     font-size:16px; font-weight:600; cursor:pointer; }
   .pick:focus-visible, .item:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
-  input[type=file] { display:none; }
+  .pick { position:relative; overflow:hidden; display:inline-block; }
+  .pick input[type=file] { position:absolute; inset:0; width:100%; height:100%; opacity:0; font-size:0; cursor:pointer; }
   .stage { background:#000; width:100%; aspect-ratio:16/9; display:grid; place-items:center; }
   video { width:100%; height:100%; background:#000; }
   .empty { color:var(--muted); padding:24px; text-align:center; }
@@ -39,8 +40,9 @@
 <body>
 <header>
   <h1>Local Player</h1>
-  <button class="pick" id="pick" type="button">Choose videos</button>
-  <input id="file" type="file" accept="video/*,.mkv,.avi,.webm" multiple>
+  <label class="pick">Choose videos
+    <input id="file" type="file" accept="video/*,.mkv,.avi,.webm" multiple>
+  </label>
 </header>
 
 <div class="stage">
@@ -57,7 +59,6 @@ const statusBox = $('status'), statusText = $('statusText'), bar = $('bar');
 
 let files = [], index = -1, url = null, token = 0, activeConv = null, mb = null;
 
-$('pick').addEventListener('click', () => input.click());
 input.addEventListener('change', () => {
   files = [...(input.files || [])];
   renderList();
