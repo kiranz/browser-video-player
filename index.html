@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#14110f">
+<title>Local Player</title>
+<style>
+  :root { --bg:#14110f; --panel:#1f1a17; --line:#3a322c; --text:#f1ebe4; --muted:#a39687; --accent:#e8b04a; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.4 -apple-system,"Helvetica Neue",Arial,sans-serif; }
+  body { min-height:100vh; min-height:100dvh; display:flex; flex-direction:column;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  header { padding:16px; display:flex; gap:12px; align-items:center; justify-content:space-between; }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  .pick { background:var(--accent); color:#1a1208; border:0; border-radius:10px; padding:11px 16px;
+    font-size:16px; font-weight:600; cursor:pointer; }
+  .pick:focus-visible, .item:focus-visible { outline:2px solid var(--text); outline-offset:2px; }
+  input[type=file] { display:none; }
+  .stage { background:#000; width:100%; aspect-ratio:16/9; display:grid; place-items:center; }
+  video { width:100%; height:100%; background:#000; }
+  .empty { color:var(--muted); padding:24px; text-align:center; }
+  .status { margin:12px 16px 0; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+    background:var(--panel); color:var(--muted); font-size:14px; display:none; }
+  .status.show { display:block; }
+  .status.error { border-color:#8a3b2e; color:#f0b3a8; }
+  progress { width:100%; height:6px; margin-top:8px; display:none; accent-color:var(--accent); }
+  progress.show { display:block; }
+  ul { list-style:none; margin:12px 0 0; padding:0; overflow-y:auto; flex:1; }
+  .item { display:block; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--line);
+    color:var(--text); padding:14px 16px; font-size:15px; cursor:pointer; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  .item[aria-current=true] { color:var(--accent); background:var(--panel); }
+  .item small { color:var(--muted); margin-left:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Local Player</h1>
+  <button class="pick" id="pick" type="button">Choose videos</button>
+  <input id="file" type="file" accept="video/*,.mkv,.avi,.webm" multiple>
+</header>
+
+<div class="stage">
+  <video id="v" controls playsinline preload="metadata" hidden></video>
+  <p class="empty" id="empty">Choose one or more videos from your phone. They play here and are never uploaded.</p>
+</div>
+<div class="status" id="status" role="status"><span id="statusText"></span><progress id="bar" max="1" value="0"></progress></div>
+<ul id="list"></ul>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const input = $('file'), video = $('v'), empty = $('empty'), list = $('list');
+const statusBox = $('status'), statusText = $('statusText'), bar = $('bar');
+
+let files = [], index = -1, url = null, token = 0, activeConv = null, mb = null;
+
+$('pick').addEventListener('click', () => input.click());
+input.addEventListener('change', () => {
+  files = [...(input.files || [])];
+  renderList();
+  if (files.length) play(0);
+});
+video.addEventListener('ended', () => { if (index + 1 < files.length) play(index + 1); });
+
+function renderList() {
+  list.innerHTML = '';
+  files.forEach((f, i) => {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.className = 'item'; b.type = 'button'; b.textContent = f.name;
+    const s = document.createElement('small');
+    s.textContent = (f.size / 1048576).toFixed(0) + ' MB';
+    b.appendChild(s);
+    b.addEventListener('click', () => play(i));
+    li.appendChild(b); list.appendChild(li);
+  });
+}
+
+function setStatus(text, { error = false, progress = null } = {}) {
+  statusBox.className = 'status show' + (error ? ' error' : '');
+  statusText.textContent = text;
+  if (progress === null) bar.className = '';
+  else { bar.className = 'show'; bar.value = progress; }
+}
+function clearStatus() { statusBox.className = 'status'; bar.className = ''; }
+
+function isNativeContainer(f) {
+  return /^video\/(mp4|quicktime|x-m4v)$/.test(f.type) || /\.(mp4|m4v|mov)$/i.test(f.name);
+}
+
+function showBlob(blob) {
+  if (url) URL.revokeObjectURL(url);
+  url = URL.createObjectURL(blob);
+  video.src = url;
+  video.hidden = false; empty.hidden = true;
+  video.play().catch(() => {});
+}
+
+async function play(i) {
+  const my = ++token;
+  index = i;
+  if (activeConv) { try { await activeConv.cancel(); } catch (e) {} activeConv = null; }
+  clearStatus();
+  [...list.querySelectorAll('.item')].forEach((el, n) => el.setAttribute('aria-current', n === i ? 'true' : 'false'));
+  const file = files[i];
+
+  if (isNativeContainer(file)) {
+    // Try Safari's own player first; fall back to remuxing if it refuses the file.
+    video.onerror = () => { if (my === token) { video.onerror = null; remux(file, my); } };
+    showBlob(file);
+  } else {
+    video.onerror = null;
+    remux(file, my);
+  }
+}
+
+async function remux(file, my) {
+  setStatus('Preparing ' + file.name + '…', { progress: 0 });
+  try {
+    mb = mb || await import('./mediabunny.min.mjs');
+    const input = new mb.Input({ source: new mb.BlobSource(file), formats: mb.ALL_FORMATS });
+    const target = new mb.BufferTarget();
+    const output = new mb.Output({ format: new mb.Mp4OutputFormat(), target });
+    // 'forced' = copy streams as-is, never re-encode. Unsupported tracks get discarded.
+    const conv = await mb.Conversion.init({ input, output, copy: { mode: 'forced' } });
+    if (my !== token) return;
+
+    const dropped = conv.discardedTracks.filter(d => d.reason !== 'discarded_by_user');
+    const keptVideo = conv.utilizedTracks.some(t => t.type === 'video');
+    if (!conv.isValid || !keptVideo) {
+      const codecs = dropped.map(d => d.track.type + ' (' + (d.track.codec || 'unknown') + ')').join(', ');
+      setStatus("This file can't be converted for iPhone playback" + (codecs ? ': ' + codecs + ' is not supported.' : '.'), { error: true });
+      return;
+    }
+
+    activeConv = conv;
+    conv.onProgress = p => { if (my === token) setStatus('Preparing ' + file.name + '…', { progress: p }); };
+    await conv.execute();
+    activeConv = null;
+    if (my !== token) return;
+
+    const blob = new Blob([target.buffer], { type: 'video/mp4' });
+    target.buffer = null;
+    video.onerror = () => {
+      video.onerror = null;
+      setStatus("Converted, but Safari still can't play it. The video codec is probably not supported on this iPhone.", { error: true });
+    };
+    showBlob(blob);
+
+    const lost = dropped.map(d => d.track.type + ' (' + (d.track.codec || 'unknown') + ')');
+    if (lost.length) setStatus('Playing without unsupported tracks: ' + lost.join(', ') + '.');
+    else clearStatus();
+  } catch (e) {
+    if (my !== token || (mb && e instanceof mb.ConversionCanceledError)) return;
+    setStatus("Couldn't read this file: " + (e && e.message ? e.message : e) + ' Very large files can also run out of memory on iPhone.', { error: true });
+  }
+}
+</script>
+</body>
+</html>
